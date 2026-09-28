@@ -95178,15 +95178,34 @@ async function getVeracodeApplicationScanStatus(vid, vkey, veracodeApp, buildId,
     );
     const outputXML = output.toString();
     const parser = new xml2js.Parser({attrkey:'att'});
-    const result = await parser.parseStringPromise(outputXML);
-    core.info('Veracode Scan Status: '+result.buildinfo.build[0].analysis_unit[0].att.status.replace(/ /g,"_").toUpperCase());
-    core.info('Veracode Policy Compliance Status: '+result.buildinfo.build[0].att.policy_compliance_status.replace(/ /g,"_").toUpperCase());
-    core.info('Veracode Scan Date: '+result.buildinfo.build[0].analysis_unit[0].att.published_date);
-    return {
-      'status': result.buildinfo.build[0].analysis_unit[0].att.status.replace(/ /g,"_").toUpperCase(),
-      'passFail': result.buildinfo.build[0].att.policy_compliance_status.replace(/ /g,"_").toUpperCase(),
-      'lastPolicyScanData': result.buildinfo.build[0].analysis_unit[0].att.published_date,
-      'scanUpdateDate': launchDate
+    try {
+      const result = await parser.parseStringPromise(outputXML);
+      if (!result || !result.buildinfo || !result.buildinfo.build) {
+        throw new Error('Invalid XML response: Missing buildinfo or build element');
+      }
+      const build = Array.isArray(result.buildinfo.build) ? result.buildinfo.build[0] : result.buildinfo.build;
+      if (!build.att || !build.analysis_unit) {
+        throw new Error('Invalid XML response: Missing build attributes or analysis_unit');
+      }
+      const analysisUnit = Array.isArray(build.analysis_unit) ? build.analysis_unit[0] : build.analysis_unit;
+      const scanStatus = analysisUnit.att.status.replace(/ /g,"_").toUpperCase();
+      const policyScanStatus = build.att.policy_compliance_status.replace(/ /g,"_").toUpperCase();
+      const scanDate = analysisUnit.att.published_date;
+      core.info('Veracode Scan Status: '+scanStatus);
+      core.info('Veracode Policy Compliance Status: '+policyScanStatus);
+      core.info('Veracode Scan Date: '+scanDate);
+      return {
+        'status': scanStatus,
+        'passFail': policyScanStatus,
+        'lastPolicyScanData': scanDate,
+        'scanUpdateDate': launchDate
+      }
+    } catch (error) {
+      core.error(`Error parsing GetBuildInfo XML response: ${error.message}`);
+      if (debug) {
+        core.debug(`Raw XML output: ${outputXML}`);
+      }
+      throw error;
     }
     
   }
@@ -158854,7 +158873,7 @@ const sandboxname = core.getInput('sandboxname', { required: false });
 const gitRepositoryUrl = core.getInput('gitRepositoryUrl', { required: false });
 const platformType = core.getInput('platformType', { required: false });
 const workflowApp = core.getInput('workflowApp', {required: false});
-const debug = core.getInput('debug', {required: false});
+const src_debug = core.getInput('debug', {required: false});
 
 const POLICY_EVALUATION_FAILED = 9;
 const SCAN_TIME_OUT = 8;
@@ -158891,7 +158910,7 @@ async function run() {
     return;
 
   // set global proxy for API calls if proxy attributes are found
-  const isDebug = (debug && debug==1);
+  const isDebug = (src_debug && src_debug==1);
 
   if (isDebug){
     core.info(`process.env.http_proxy - ${process.env.http_proxy }`);
@@ -158904,13 +158923,13 @@ async function run() {
   setGlobalProxy(isDebug);
 
   if (workflowApp && workflowApp.toLowerCase() === 'true') {
-      await executeStaticScans(vid, vkey, appname, policy, teams, createprofile, gitRepositoryUrl, sandboxname, version, filepath, responseCode, createsandbox, failbuild, debug);
+      await executeStaticScans(vid, vkey, appname, policy, teams, createprofile, gitRepositoryUrl, sandboxname, version, filepath, responseCode, createsandbox, failbuild, src_debug);
       return;
   }  
 
-  if (debug)
+  if (src_debug)
     core.debug(`Getting Veracode Application for Policy Scan: ${appname}`)
-  const veracodeApp = await getVeracodeApplicationForPolicyScan(vid, vkey, appname, policy, teams, createprofile, gitRepositoryUrl, debug);
+  const veracodeApp = await getVeracodeApplicationForPolicyScan(vid, vkey, appname, policy, teams, createprofile, gitRepositoryUrl, src_debug);
   if (veracodeApp.appId === -1) {
     core.setFailed(`Veracode application profile Not Found. Please create a profile on Veracode Platform, \
       or set "createprofile" to "true" in the pipeline configuration to automatically create profile.`);
@@ -158928,7 +158947,7 @@ async function run() {
   try {
     if (sandboxname !== ''){
       core.info(`Running a Sandbox Scan: '${sandboxname}' on applicaiton: '${appname}'`);
-      const sandboxes = await getVeracodeSandboxIDFromProfile(vid, vkey, veracodeApp.appGuid, debug);
+      const sandboxes = await getVeracodeSandboxIDFromProfile(vid, vkey, veracodeApp.appGuid, src_debug);
 
       core.info('Finding Sandbox ID & GUID');
       if (sandboxes.page.total_elements !== 0) {
@@ -158943,14 +158962,14 @@ async function run() {
         }
       }
       if ( sandboxID == undefined && createsandbox == 'true'){
-        if (debug)
+        if (src_debug)
           core.debug(`Sandbox Not Found. Creating Sandbox: ${sandboxname}`);
         //create sandbox
-        const createSandboxResponse = await createSandboxRequest(vid, vkey, veracodeApp.appGuid, sandboxname, debug);
+        const createSandboxResponse = await createSandboxRequest(vid, vkey, veracodeApp.appGuid, sandboxname, src_debug);
         core.info(`Veracode Sandbox Created: ${createSandboxResponse.name} / ${createSandboxResponse.guid}`);
         sandboxID = createSandboxResponse.id;
         sandboxGUID = createSandboxResponse.guid;
-        buildId = await createSandboxBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, sandboxID, debug);
+        buildId = await createSandboxBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, sandboxID, src_debug);
         core.info(`Veracode Sandbox Scan Created, Build Id: ${buildId}`);
       }
       else if ( sandboxID == undefined && createsandbox == 'false'){
@@ -158960,13 +158979,13 @@ async function run() {
       }
       else{
         core.info(`Sandbox Found: ${sandboxID} - ${sandboxGUID}`);
-        buildId = await createSandboxBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, sandboxID, debug);
+        buildId = await createSandboxBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, sandboxID, src_debug);
         core.info(`Veracode Sandbox Scan Created, Build Id: ${buildId}`);
       }
     }
     else{
       core.info(`Running a Policy Scan: ${appname}`);
-      buildId = await createBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, debug);
+      buildId = await createBuild(vid, vkey, jarName, veracodeApp.appId, version, deleteincompletescan, src_debug);
       core.info(`Veracode Policy Scan Created, Build Id: ${buildId}`);
     }
   } catch (error) {
@@ -158974,7 +158993,7 @@ async function run() {
     return;
   }
 
-  const uploaded = await uploadFile(vid, vkey, jarName, veracodeApp.appId, filepath, sandboxID, debug);
+  const uploaded = await uploadFile(vid, vkey, jarName, veracodeApp.appId, filepath, sandboxID, src_debug);
   core.info(`Artifact(s) uploaded: ${uploaded}`);
 
   // return and exit the app if the duration of the run is more than scantimeout
@@ -158989,7 +159008,7 @@ async function run() {
   
   if (include === '' && uploaded > 0) {
     const autoScan = true;
-    await beginPreScan(vid, vkey, jarName, veracodeApp.appId, autoScan, sandboxID, debug);
+    await beginPreScan(vid, vkey, jarName, veracodeApp.appId, autoScan, sandboxID, src_debug);
     if (scantimeout === '') {
       core.info('Static Scan Submitted, please check Veracode Platform for results');
       return;
@@ -158998,7 +159017,7 @@ async function run() {
   else if (uploaded > 0)
   {
     const autoScan = false;
-    const prescan = await beginPreScan(vid, vkey, jarName, veracodeApp.appId, autoScan, sandboxID, debug);
+    const prescan = await beginPreScan(vid, vkey, jarName, veracodeApp.appId, autoScan, sandboxID, src_debug);
     core.info(`Pre-Scan Submitted: ${prescan}`);
     while (true) {
       await sleep(appConfig().pollingInterval);
@@ -159016,9 +159035,9 @@ async function run() {
       }
     }
 
-    const moduleIds = await getModules(vid, vkey, jarName, veracodeApp.appId, include, sandboxID, debug);
+    const moduleIds = await getModules(vid, vkey, jarName, veracodeApp.appId, include, sandboxID, src_debug);
     core.info(`Modules to Scan: ${moduleIds.toString()}`);
-    const scan = await beginScan(vid, vkey, jarName, veracodeApp.appId, moduleIds.toString(), sandboxID, debug);
+    const scan = await beginScan(vid, vkey, jarName, veracodeApp.appId, moduleIds.toString(), sandboxID, src_debug);
     core.info(`Scan Submitted: ${scan}`);
   }
   else 
@@ -159046,23 +159065,24 @@ async function run() {
         return responseCode;
       }
     }
-    if ((statusUpdate.status === 'PUBLISHED' || statusUpdate.status == 'RESULTS_READY') && statusUpdate.scanUpdateDate) {
-      const scanDate = new Date(statusUpdate.scanUpdateDate);
-      const policyScanDate = new Date(statusUpdate.lastPolicyScanData);
-      if (!policyScanDate || scanDate < policyScanDate) {
-        if (statusUpdate.passFail === 'NOT_ASSESSED' || statusUpdate.passFail === 'DETERMINING') {
-          core.info(`Policy Evaluation: ${statusUpdate.passFail} - Waiting for policy evaluation...`);
-        } else {
-          if ((statusUpdate.passFail === 'DID_NOT_PASS' || statusUpdate.passFail == 'CONDITIONAL_PASS') && failbuild.toLowerCase() === 'true'){
-            core.setFailed('Policy Violation: Veracode Policy Scan Failed');
-            responseCode = POLICY_EVALUATION_FAILED;
-          }
-          else
-            core.info(`Policy Evaluation: ${statusUpdate.passFail}`)
-          break;
+    if ((statusUpdate.status === 'PUBLISHED' || statusUpdate.status == 'RESULTS_READY')) {
+      const scanDate = statusUpdate.scanUpdateDate ? new Date(statusUpdate.scanUpdateDate) : null;
+      const policyScanDate = statusUpdate.lastPolicyScanData ? new Date(statusUpdate.lastPolicyScanData) : null;
+      if (src_debug) {
+        core.debug(`Scan date: ${scanDate}, Policy scan date: ${policyScanDate}`);
+      }
+      if (!scanDate || !policyScanDate || scanDate.getTime() < policyScanDate.getTime()) {
+        const passFailStatus = statusUpdate.passFail ? statusUpdate.passFail.replace(/ /g,"_").toUpperCase() : '';
+        if ((passFailStatus === 'DID_NOT_PASS' || passFailStatus === 'CONDITIONAL_PASS') && failbuild.toLowerCase() === 'true'){
+          core.setFailed('Policy Violation: Veracode Policy Scan Failed');
+          responseCode = POLICY_EVALUATION_FAILED;
         }
+        else
+          core.info(`Policy Evaluation: ${statusUpdate.passFail}`)
+        break;
       } else {
         core.info(`Policy Evaluation: ${statusUpdate.passFail}`)
+        break;
       }
     }
     
