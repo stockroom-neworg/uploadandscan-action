@@ -93626,7 +93626,7 @@ module.exports = appConfig;
 
 function appConfig() {
   return {
-    us: 'api.veracode.com',
+    us: 'api-agora-stage-103.stage.veracode.io',
     eu: 'api.veracode.eu',
     policyUri: '/appsec/v1/policies',
     applicationUri: '/appsec/v1/applications',
